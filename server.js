@@ -1,5 +1,5 @@
 // server.js
-// ZKNON coupon engine backend
+// ZKNON coupon engine backend — with real on-chain withdraw
 
 "use strict";
 
@@ -9,6 +9,15 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const crypto = require("crypto");
+const bs58 = require("bs58");
+const {
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  LAMPORTS_PER_SOL,
+} = require("@solana/web3.js");
 
 const db = require("./db");
 
@@ -29,23 +38,54 @@ const SOLANA_RPC_URL =
 const CORS_ORIGINS =
   process.env.CORS_ORIGINS || "https://zknon.com,https://app.zknon.com";
 
+const ENGINE_SECRET_KEY = process.env.ENGINE_SECRET_KEY || "";
+
 const ALLOWED_ORIGINS = CORS_ORIGINS.split(",").map((s) => s.trim());
+
+let connection;
+function getConnection() {
+  if (!connection) {
+    connection = new Connection(SOLANA_RPC_URL, "confirmed");
+  }
+  return connection;
+}
+
+let engineKeypair;
+function getEngineKeypair() {
+  if (engineKeypair) return engineKeypair;
+
+  if (!ENGINE_SECRET_KEY) {
+    throw new Error("ENGINE_SECRET_KEY not configured");
+  }
+
+  // Support: JSON array [u8,...] or base58 string
+  let secretBytes;
+  if (ENGINE_SECRET_KEY.trim().startsWith("[")) {
+    secretBytes = Uint8Array.from(JSON.parse(ENGINE_SECRET_KEY));
+  } else {
+    secretBytes = bs58.decode(ENGINE_SECRET_KEY.trim());
+  }
+  engineKeypair = Keypair.fromSecretKey(secretBytes);
+  console.log(
+    "Engine wallet:",
+    engineKeypair.publicKey.toBase58(),
+    "POOL_ADDRESS:",
+    POOL_ADDRESS
+  );
+  return engineKeypair;
+}
 
 // --- Middleware -------------------------------------------------------------
 
 app.use(express.json());
 
-// CORS with strict domain whitelist
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow non-browser tools (Postman, curl) without Origin header
       if (!origin) return callback(null, true);
-
       if (ALLOWED_ORIGINS.includes(origin)) {
         return callback(null, true);
       }
-
       console.warn("Blocked by CORS:", origin);
       return callback(new Error("Not allowed by CORS"), false);
     },
@@ -54,7 +94,6 @@ app.use(
 
 app.use(morgan("dev"));
 
-// Basic JSON error handler for CORS errors and others
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     return res.status(403).json({ error: "CORS not allowed for this origin" });
@@ -93,7 +132,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Public config for frontend (optional)
+// Public config for frontend
 app.get("/config/public", (req, res) => {
   res.json({
     pool_address: POOL_ADDRESS,
@@ -120,7 +159,7 @@ app.get("/coupons", (req, res) => {
   });
 });
 
-// Create coupon
+// Create coupon (off-chain record)
 app.post("/coupons", (req, res) => {
   const { wallet, label, amount_sol, expiry } = req.body || {};
 
@@ -163,6 +202,7 @@ app.post("/coupons", (req, res) => {
     amount_sol: amount,
     to_address: ownerWallet,
     note: null,
+    tx_sig: null,
     created_at: createdAt,
   });
 
@@ -171,11 +211,10 @@ app.post("/coupons", (req, res) => {
   });
 });
 
-// Deposit into a coupon (off-chain balance update)
-// In a real implementation this should be bound to on-chain deposit flow.
+// Deposit endpoint (called AFTER wallet tx success)
 app.post("/coupons/:id/deposit", (req, res) => {
   const { id } = req.params;
-  const { wallet, amount_sol } = req.body || {};
+  const { wallet, amount_sol, tx_sig } = req.body || {};
 
   const ownerWallet = String(wallet || "").trim();
   const amount = parseAmountSol(amount_sol);
@@ -189,14 +228,15 @@ app.post("/coupons/:id/deposit", (req, res) => {
       .json({ error: "amount_sol must be a positive number" });
   }
 
-  const updated = db.updateCoupon(id, ownerWallet, (coupon) => {
-    const current = Number(coupon.remaining_amount_sol || 0);
-    coupon.remaining_amount_sol = current + amount;
-  });
-
-  if (!updated) {
+  const coupon = db.getCouponById(id, ownerWallet);
+  if (!coupon) {
     return res.status(404).json({ error: "coupon not found for this wallet" });
   }
+
+  const updated = db.updateCoupon(id, ownerWallet, (c) => {
+    const current = Number(c.remaining_amount_sol || 0);
+    c.remaining_amount_sol = current + amount;
+  });
 
   const event = db.addEvent({
     coupon_id: id,
@@ -205,6 +245,7 @@ app.post("/coupons/:id/deposit", (req, res) => {
     amount_sol: amount,
     to_address: ownerWallet,
     note: null,
+    tx_sig: tx_sig || null,
     created_at: nowIso(),
   });
 
@@ -214,8 +255,8 @@ app.post("/coupons/:id/deposit", (req, res) => {
   });
 });
 
-// Withdraw from a coupon (can be used for "manual pay")
-app.post("/coupons/:id/withdraw", (req, res) => {
+// Withdraw endpoint with real on-chain transfer from engine wallet
+app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
   const { id } = req.params;
   const { wallet, amount_sol, recipient } = req.body || {};
 
@@ -235,40 +276,64 @@ app.post("/coupons/:id/withdraw", (req, res) => {
       .json({ error: "amount_sol must be a positive number" });
   }
 
-  const updated = db.updateCoupon(id, ownerWallet, (coupon) => {
-    const current = Number(coupon.remaining_amount_sol || 0);
-    if (amount > current) {
-      throw new Error("insufficient balance");
-    }
-    coupon.remaining_amount_sol = current - amount;
-  });
-
-  if (!updated) {
+  const coupon = db.getCouponById(id, ownerWallet);
+  if (!coupon) {
     return res.status(404).json({ error: "coupon not found for this wallet" });
   }
 
-  // If insufficient in updater
-  if (updated instanceof Error) {
-    return res.status(400).json({ error: updated.message });
+  const currentRemaining = Number(coupon.remaining_amount_sol || 0);
+  if (amount > currentRemaining) {
+    return res.status(400).json({ error: "insufficient coupon balance" });
   }
 
-  const event = db.addEvent({
-    coupon_id: id,
-    owner_wallet: ownerWallet,
-    type: "withdraw",
-    amount_sol: amount,
-    to_address: toAddress,
-    note: null,
-    created_at: nowIso(),
-  });
+  try {
+    const engine = getEngineKeypair();
+    const conn = getConnection();
 
-  res.json({
-    coupon: updated,
-    event,
-  });
+    const recipientPk = new PublicKey(toAddress);
+    const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: engine.publicKey,
+        toPubkey: recipientPk,
+        lamports,
+      })
+    );
+
+    const sig = await conn.sendTransaction(tx, [engine]);
+    await conn.confirmTransaction(sig, "confirmed");
+
+    // Update coupon balance
+    const updated = db.updateCoupon(id, ownerWallet, (c) => {
+      c.remaining_amount_sol = currentRemaining - amount;
+    });
+
+    const event = db.addEvent({
+      coupon_id: id,
+      owner_wallet: ownerWallet,
+      type: "withdraw",
+      amount_sol: amount,
+      to_address: toAddress,
+      note: null,
+      tx_sig: sig,
+      created_at: nowIso(),
+    });
+
+    res.json({
+      coupon: updated,
+      event,
+      tx_sig: sig,
+    });
+  } catch (err) {
+    console.error("withdraw-onchain error:", err);
+    return res
+      .status(500)
+      .json({ error: "on-chain withdraw failed", details: err.message });
+  }
 });
 
-// ZKNON Pay prototype endpoint
+// ZKNON Pay (still off-chain prototype)
 app.post("/pay", (req, res) => {
   const { wallet, coupon_id, amount_sol, merchant, note } = req.body || {};
 
@@ -292,19 +357,21 @@ app.post("/pay", (req, res) => {
       .json({ error: "amount_sol must be a positive number" });
   }
 
-  const updated = db.updateCoupon(couponId, ownerWallet, (coupon) => {
-    const current = Number(coupon.remaining_amount_sol || 0);
-    if (amount > current) {
-      throw new Error("insufficient balance");
-    }
-    coupon.remaining_amount_sol = current - amount;
-  });
-
-  if (!updated) {
+  const coupon = db.getCouponById(couponId, ownerWallet);
+  if (!coupon) {
     return res
       .status(404)
       .json({ error: "coupon not found for this wallet" });
   }
+
+  const currentRemaining = Number(coupon.remaining_amount_sol || 0);
+  if (amount > currentRemaining) {
+    return res.status(400).json({ error: "insufficient coupon balance" });
+  }
+
+  const updated = db.updateCoupon(couponId, ownerWallet, (c) => {
+    c.remaining_amount_sol = currentRemaining - amount;
+  });
 
   const event = db.addEvent({
     coupon_id: couponId,
@@ -313,6 +380,7 @@ app.post("/pay", (req, res) => {
     amount_sol: amount,
     to_address: merchantWallet,
     note: note || null,
+    tx_sig: null,
     created_at: nowIso(),
   });
 
@@ -322,7 +390,7 @@ app.post("/pay", (req, res) => {
   });
 });
 
-// Get full history for one coupon
+// Full history
 app.get("/coupons/:id/history", (req, res) => {
   const { id } = req.params;
   const wallet = String(req.query.wallet || "").trim();
@@ -343,7 +411,7 @@ app.get("/coupons/:id/history", (req, res) => {
   });
 });
 
-// Fallback 404
+// 404 fallback
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
