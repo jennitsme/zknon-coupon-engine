@@ -60,7 +60,7 @@ function getConnection() {
     });
 
     console.log("Solana connection created:", SOLANA_RPC_URL);
-    if (headers) console.log("Using x-api-key header for Tatum RPC");
+    if (headers) console.log("Using Tatum x-api-key header");
   }
   return connection;
 }
@@ -74,7 +74,7 @@ function getEngineKeypair() {
   }
 
   let secretBytes;
-  // Support JSON array or base58
+  // Support JSON array or base58 string
   if (ENGINE_SECRET_KEY.trim().startsWith("[")) {
     secretBytes = Uint8Array.from(JSON.parse(ENGINE_SECRET_KEY));
   } else {
@@ -115,7 +115,7 @@ app.use((err, req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helper functions
 // ---------------------------------------------------------------------------
 
 function generateCouponId() {
@@ -150,14 +150,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Public config
+// Public config (for frontend)
 app.get("/config/public", (req, res) => {
   res.json({
     pool_address: POOL_ADDRESS,
   });
 });
 
-// List coupons
+// List coupons for wallet
 app.get("/coupons", (req, res) => {
   const wallet = String(req.query.wallet || "").trim();
   if (!wallet) {
@@ -226,7 +226,7 @@ app.post("/coupons", (req, res) => {
   res.status(201).json({ coupon });
 });
 
-// Deposit (called after wallet TX success)
+// Deposit (called AFTER successful on-chain deposit via Phantom)
 app.post("/coupons/:id/deposit", (req, res) => {
   const { id } = req.params;
   const { wallet, amount_sol, tx_sig } = req.body || {};
@@ -345,7 +345,7 @@ app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
   }
 });
 
-// ZKNON Pay (off-chain prototype)
+// ZKNON Pay (off-chain balance movement)
 app.post("/pay", (req, res) => {
   const { wallet, coupon_id, amount_sol, merchant, note } = req.body || {};
 
@@ -422,9 +422,9 @@ app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// Start
+// Start server
 app.listen(PORT, () => {
-  console.log(`ZKNON coupon backend on port ${PORT}`);
+  console.log(`ZKNON coupon backend listening on port ${PORT}`);
   console.log(`Allowed CORS origins: ${ALLOWED_ORIGINS.join(", ")}`);
   console.log(`Pool address: ${POOL_ADDRESS}`);
   console.log(`RPC URL: ${SOLANA_RPC_URL}`);
