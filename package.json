@@ -1,5 +1,5 @@
 {
-  "name": "zknon-coupon-backend",
+  "name": "zknon-coupon-engine",
   "version": "1.0.0",
   "description": "ZKNON coupon engine backend",
   "main": "server.js",
@@ -11,12 +11,12 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@solana/web3.js": "^1.93.0",
+    "bs58": "^5.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "morgan": "^1.10.0"
-    "@solana/web3.js": "^1.93.0",
-  "bs58": "^5.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
