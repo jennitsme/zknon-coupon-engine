@@ -1,16 +1,22 @@
 {
-  "name": "zknon-coupon-engine",
+  "name": "zknon-coupon-backend",
   "version": "1.0.0",
-  "description": "ZKNON coupon-based private transfer backend (Solana + Tatum RPC)",
+  "description": "ZKNON coupon engine backend",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "@solana/web3.js": "^1.95.2",
-    "bs58": "^5.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
