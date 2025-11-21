@@ -1,5 +1,5 @@
 node_modules
 .env
 npm-debug.log*
-data
 .DS_Store
+data
