@@ -1,5 +1,7 @@
 // db.js
-// Simple file-based storage for coupons and coupon events.
+// Very simple JSON file storage for coupons + events
+
+"use strict";
 
 const fs = require("fs");
 const path = require("path");
@@ -14,50 +16,68 @@ function ensureDataDir() {
   }
 }
 
-function safeReadJson(filePath, fallback) {
+function safeReadJSON(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify(fallback, null, 2), "utf8");
       return fallback;
     }
     const raw = fs.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
-    return parsed || fallback;
+    if (!parsed || typeof parsed !== "object") return fallback;
+    return parsed;
   } catch (err) {
-    console.error(`Failed to read ${filePath}:`, err);
+    console.error("Failed to read", filePath, err);
     return fallback;
   }
 }
 
-function safeWriteJson(filePath, data) {
+function safeWriteJSON(filePath, data) {
   try {
+    ensureDataDir();
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   } catch (err) {
-    console.error(`Failed to write ${filePath}:`, err);
+    console.error("Failed to write", filePath, err);
   }
 }
 
+// Coupons structure: { coupons: [ ... ] }
+// Events structure: { events: [ ... ] }
+
 function loadCoupons() {
-  ensureDataDir();
-  return safeReadJson(COUPONS_FILE, []);
+  const data = safeReadJSON(COUPONS_FILE, { coupons: [] });
+  if (!Array.isArray(data.coupons)) return [];
+  return data.coupons;
 }
 
 function saveCoupons(coupons) {
-  ensureDataDir();
-  safeWriteJson(COUPONS_FILE, coupons);
+  safeWriteJSON(COUPONS_FILE, { coupons });
 }
 
 function loadEvents() {
-  ensureDataDir();
-  return safeReadJson(EVENTS_FILE, []);
+  const data = safeReadJSON(EVENTS_FILE, { events: [] });
+  if (!Array.isArray(data.events)) return [];
+  return data.events;
 }
 
 function saveEvents(events) {
-  ensureDataDir();
-  safeWriteJson(EVENTS_FILE, events);
+  safeWriteJSON(EVENTS_FILE, { events });
 }
 
-// Public API
+// -------------------------------------------------------------------------
+// Coupon operations
+// -------------------------------------------------------------------------
+
+function getCouponsByOwner(ownerWallet) {
+  const coupons = loadCoupons();
+  return coupons.filter((c) => c.owner_wallet === ownerWallet);
+}
+
+function getCouponById(id, ownerWallet) {
+  const coupons = loadCoupons();
+  return coupons.find(
+    (c) => c.id === id && (!ownerWallet || c.owner_wallet === ownerWallet)
+  );
+}
 
 function createCoupon(coupon) {
   const coupons = loadCoupons();
@@ -66,31 +86,22 @@ function createCoupon(coupon) {
   return coupon;
 }
 
-function updateCoupon(couponId, ownerWallet, updater) {
+function updateCoupon(id, ownerWallet, mutator) {
   const coupons = loadCoupons();
-  const index = coupons.findIndex(
-    (c) => c.id === couponId && c.owner_wallet === ownerWallet
+  const idx = coupons.findIndex(
+    (c) => c.id === id && c.owner_wallet === ownerWallet
   );
-  if (index === -1) return null;
-
-  const updated = { ...coupons[index] };
-  updater(updated);
-  coupons[index] = updated;
+  if (idx === -1) return null;
+  const c = coupons[idx];
+  mutator(c);
+  coupons[idx] = c;
   saveCoupons(coupons);
-  return updated;
+  return c;
 }
 
-function getCouponById(couponId, ownerWallet) {
-  const coupons = loadCoupons();
-  return coupons.find(
-    (c) => c.id === couponId && c.owner_wallet === ownerWallet
-  );
-}
-
-function getCouponsByOwner(ownerWallet) {
-  const coupons = loadCoupons();
-  return coupons.filter((c) => c.owner_wallet === ownerWallet);
-}
+// -------------------------------------------------------------------------
+// Events
+// -------------------------------------------------------------------------
 
 function addEvent(event) {
   const events = loadEvents();
@@ -107,10 +118,10 @@ function getEventsForCoupon(couponId, ownerWallet) {
 }
 
 module.exports = {
+  getCouponsByOwner,
+  getCouponById,
   createCoupon,
   updateCoupon,
-  getCouponById,
-  getCouponsByOwner,
   addEvent,
   getEventsForCoupon,
 };
