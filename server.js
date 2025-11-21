@@ -1,5 +1,5 @@
 // server.js
-// ZKNON coupon engine backend — with real on-chain withdraw
+// ZKNON coupon engine backend — Tatum RPC + on-chain withdraw from engine wallet
 
 "use strict";
 
@@ -23,7 +23,9 @@ const db = require("./db");
 
 const app = express();
 
-// --- Config -----------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 4000;
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -33,7 +35,9 @@ const POOL_ADDRESS =
   "8hGDXBJqpCZvWaDcbvXykRSb1bKbbJ5Ji4c85ubYvkaA";
 
 const SOLANA_RPC_URL =
-  process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+  process.env.SOLANA_RPC_URL || "https://solana-mainnet.gateway.tatum.io/";
+
+const TATUM_API_KEY = process.env.TATUM_API_KEY || "";
 
 const CORS_ORIGINS =
   process.env.CORS_ORIGINS || "https://zknon.com,https://app.zknon.com";
@@ -45,7 +49,18 @@ const ALLOWED_ORIGINS = CORS_ORIGINS.split(",").map((s) => s.trim());
 let connection;
 function getConnection() {
   if (!connection) {
-    connection = new Connection(SOLANA_RPC_URL, "confirmed");
+    const headers =
+      TATUM_API_KEY && TATUM_API_KEY !== "YOUR_TATUM_API_KEY_HERE"
+        ? { "x-api-key": TATUM_API_KEY }
+        : undefined;
+
+    connection = new Connection(SOLANA_RPC_URL, {
+      commitment: "confirmed",
+      httpHeaders: headers,
+    });
+
+    console.log("Solana connection created:", SOLANA_RPC_URL);
+    if (headers) console.log("Using x-api-key header for Tatum RPC");
   }
   return connection;
 }
@@ -58,31 +73,29 @@ function getEngineKeypair() {
     throw new Error("ENGINE_SECRET_KEY not configured");
   }
 
-  // Support: JSON array [u8,...] or base58 string
   let secretBytes;
+  // Support JSON array or base58
   if (ENGINE_SECRET_KEY.trim().startsWith("[")) {
     secretBytes = Uint8Array.from(JSON.parse(ENGINE_SECRET_KEY));
   } else {
     secretBytes = bs58.decode(ENGINE_SECRET_KEY.trim());
   }
   engineKeypair = Keypair.fromSecretKey(secretBytes);
-  console.log(
-    "Engine wallet:",
-    engineKeypair.publicKey.toBase58(),
-    "POOL_ADDRESS:",
-    POOL_ADDRESS
-  );
+  console.log("Engine wallet:", engineKeypair.publicKey.toBase58());
+  console.log("Pool address:", POOL_ADDRESS);
   return engineKeypair;
 }
 
-// --- Middleware -------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
 
 app.use(express.json());
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
+      if (!origin) return callback(null, true); // curl / Postman
       if (ALLOWED_ORIGINS.includes(origin)) {
         return callback(null, true);
       }
@@ -101,7 +114,9 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
-// --- Helpers ----------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function generateCouponId() {
   const part1 = crypto.randomBytes(2).toString("hex").toUpperCase();
@@ -119,7 +134,9 @@ function parseAmountSol(value) {
   return n;
 }
 
-// --- Routes -----------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
 // Health check
 app.get("/health", (req, res) => {
@@ -128,21 +145,21 @@ app.get("/health", (req, res) => {
     network: "solana-mainnet",
     pool_address: POOL_ADDRESS,
     rpc_url: SOLANA_RPC_URL ? "configured" : "missing",
+    rpc_with_tatum: !!TATUM_API_KEY,
     env: NODE_ENV,
   });
 });
 
-// Public config for frontend
+// Public config
 app.get("/config/public", (req, res) => {
   res.json({
     pool_address: POOL_ADDRESS,
   });
 });
 
-// List coupons for a wallet
+// List coupons
 app.get("/coupons", (req, res) => {
   const wallet = String(req.query.wallet || "").trim();
-
   if (!wallet) {
     return res.status(400).json({ error: "wallet query param is required" });
   }
@@ -159,7 +176,7 @@ app.get("/coupons", (req, res) => {
   });
 });
 
-// Create coupon (off-chain record)
+// Create coupon
 app.post("/coupons", (req, res) => {
   const { wallet, label, amount_sol, expiry } = req.body || {};
 
@@ -206,12 +223,10 @@ app.post("/coupons", (req, res) => {
     created_at: createdAt,
   });
 
-  res.status(201).json({
-    coupon,
-  });
+  res.status(201).json({ coupon });
 });
 
-// Deposit endpoint (called AFTER wallet tx success)
+// Deposit (called after wallet TX success)
 app.post("/coupons/:id/deposit", (req, res) => {
   const { id } = req.params;
   const { wallet, amount_sol, tx_sig } = req.body || {};
@@ -249,13 +264,10 @@ app.post("/coupons/:id/deposit", (req, res) => {
     created_at: nowIso(),
   });
 
-  res.json({
-    coupon: updated,
-    event,
-  });
+  res.json({ coupon: updated, event });
 });
 
-// Withdraw endpoint with real on-chain transfer from engine wallet
+// Withdraw with real on-chain transfer from engine wallet
 app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
   const { id } = req.params;
   const { wallet, amount_sol, recipient } = req.body || {};
@@ -304,7 +316,6 @@ app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
     const sig = await conn.sendTransaction(tx, [engine]);
     await conn.confirmTransaction(sig, "confirmed");
 
-    // Update coupon balance
     const updated = db.updateCoupon(id, ownerWallet, (c) => {
       c.remaining_amount_sol = currentRemaining - amount;
     });
@@ -327,13 +338,14 @@ app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
     });
   } catch (err) {
     console.error("withdraw-onchain error:", err);
-    return res
-      .status(500)
-      .json({ error: "on-chain withdraw failed", details: err.message });
+    res.status(500).json({
+      error: "on-chain withdraw failed",
+      details: err.message,
+    });
   }
 });
 
-// ZKNON Pay (still off-chain prototype)
+// ZKNON Pay (off-chain prototype)
 app.post("/pay", (req, res) => {
   const { wallet, coupon_id, amount_sol, merchant, note } = req.body || {};
 
@@ -384,10 +396,7 @@ app.post("/pay", (req, res) => {
     created_at: nowIso(),
   });
 
-  res.json({
-    coupon: updated,
-    event,
-  });
+  res.json({ coupon: updated, event });
 });
 
 // Full history
@@ -405,20 +414,18 @@ app.get("/coupons/:id/history", (req, res) => {
   }
 
   const events = db.getEventsForCoupon(id, wallet);
-  res.json({
-    coupon,
-    events,
-  });
+  res.json({ coupon, events });
 });
 
-// 404 fallback
+// 404
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// Start server
+// Start
 app.listen(PORT, () => {
   console.log(`ZKNON coupon backend on port ${PORT}`);
   console.log(`Allowed CORS origins: ${ALLOWED_ORIGINS.join(", ")}`);
   console.log(`Pool address: ${POOL_ADDRESS}`);
+  console.log(`RPC URL: ${SOLANA_RPC_URL}`);
 });
