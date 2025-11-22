@@ -1,5 +1,4 @@
 // server.js
-// ZKNON coupon engine backend — Tatum RPC + on-chain withdraw from engine wallet
 
 "use strict";
 
