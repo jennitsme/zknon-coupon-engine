@@ -1,4 +1,12 @@
 // server.js
+// ZKNON coupon engine backend — using Tatum RPC and an engine wallet
+// Features:
+// - Create coupon
+// - Per-wallet coupon listing
+// - Deposit (records a successful on-chain deposit done via Phantom)
+// - Withdraw-onchain (real transfer from engine wallet)
+// - ZKNON Pay (off-chain payment using coupon balance)
+// - Per-coupon history
 
 "use strict";
 
@@ -23,7 +31,7 @@ const db = require("./db");
 const app = express();
 
 // ---------------------------------------------------------------------------
-// Config
+// Configuration
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 4000;
@@ -45,6 +53,7 @@ const ENGINE_SECRET_KEY = process.env.ENGINE_SECRET_KEY || "";
 
 const ALLOWED_ORIGINS = CORS_ORIGINS.split(",").map((s) => s.trim());
 
+// Lazily created connection
 let connection;
 function getConnection() {
   if (!connection) {
@@ -59,26 +68,33 @@ function getConnection() {
     });
 
     console.log("Solana connection created:", SOLANA_RPC_URL);
-    if (headers) console.log("Using Tatum x-api-key header");
+    if (headers) {
+      console.log("Using Tatum x-api-key header");
+    }
   }
   return connection;
 }
 
+// Lazily created engine keypair (authority for withdraw-onchain)
 let engineKeypair;
 function getEngineKeypair() {
   if (engineKeypair) return engineKeypair;
 
   if (!ENGINE_SECRET_KEY) {
-    throw new Error("ENGINE_SECRET_KEY not configured");
+    throw new Error("ENGINE_SECRET_KEY is not configured");
   }
 
   let secretBytes;
+
   // Support JSON array or base58 string
   if (ENGINE_SECRET_KEY.trim().startsWith("[")) {
+    // JSON array
     secretBytes = Uint8Array.from(JSON.parse(ENGINE_SECRET_KEY));
   } else {
+    // base58 string
     secretBytes = bs58.decode(ENGINE_SECRET_KEY.trim());
   }
+
   engineKeypair = Keypair.fromSecretKey(secretBytes);
   console.log("Engine wallet:", engineKeypair.publicKey.toBase58());
   console.log("Pool address:", POOL_ADDRESS);
@@ -94,7 +110,7 @@ app.use(express.json());
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // curl / Postman
+      if (!origin) return callback(null, true); // allow tools like curl
       if (ALLOWED_ORIGINS.includes(origin)) {
         return callback(null, true);
       }
@@ -106,6 +122,7 @@ app.use(
 
 app.use(morgan("dev"));
 
+// CORS error handler
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     return res.status(403).json({ error: "CORS not allowed for this origin" });
@@ -149,14 +166,14 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Public config (for frontend)
+// Public config for frontend
 app.get("/config/public", (req, res) => {
   res.json({
     pool_address: POOL_ADDRESS,
   });
 });
 
-// List coupons for wallet
+// List coupons for a wallet
 app.get("/coupons", (req, res) => {
   const wallet = String(req.query.wallet || "").trim();
   if (!wallet) {
@@ -225,7 +242,7 @@ app.post("/coupons", (req, res) => {
   res.status(201).json({ coupon });
 });
 
-// Deposit (called AFTER successful on-chain deposit via Phantom)
+// Deposit (record after successful on-chain deposit from wallet to pool)
 app.post("/coupons/:id/deposit", (req, res) => {
   const { id } = req.params;
   const { wallet, amount_sol, tx_sig } = req.body || {};
@@ -344,7 +361,7 @@ app.post("/coupons/:id/withdraw-onchain", async (req, res) => {
   }
 });
 
-// ZKNON Pay (off-chain balance movement)
+// ZKNON Pay (off-chain, only balance change)
 app.post("/pay", (req, res) => {
   const { wallet, coupon_id, amount_sol, merchant, note } = req.body || {};
 
@@ -398,7 +415,7 @@ app.post("/pay", (req, res) => {
   res.json({ coupon: updated, event });
 });
 
-// Full history
+// Full history for a coupon
 app.get("/coupons/:id/history", (req, res) => {
   const { id } = req.params;
   const wallet = String(req.query.wallet || "").trim();
@@ -416,7 +433,7 @@ app.get("/coupons/:id/history", (req, res) => {
   res.json({ coupon, events });
 });
 
-// 404
+// 404 fallback
 app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
