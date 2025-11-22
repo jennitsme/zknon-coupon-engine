@@ -1,5 +1,5 @@
 // db.js
-// Very simple JSON file storage for coupons + events
+// Very simple JSON file storage for ZKNON coupons and events
 
 "use strict";
 
@@ -26,7 +26,7 @@ function safeReadJSON(filePath, fallback) {
     if (!parsed || typeof parsed !== "object") return fallback;
     return parsed;
   } catch (err) {
-    console.error("Failed to read", filePath, err);
+    console.error("Failed to read JSON:", filePath, err);
     return fallback;
   }
 }
@@ -36,12 +36,12 @@ function safeWriteJSON(filePath, data) {
     ensureDataDir();
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   } catch (err) {
-    console.error("Failed to write", filePath, err);
+    console.error("Failed to write JSON:", filePath, err);
   }
 }
 
-// Coupons structure: { coupons: [ ... ] }
-// Events structure: { events: [ ... ] }
+// coupons.json structure: { coupons: [...] }
+// events.json structure: { events: [...] }
 
 function loadCoupons() {
   const data = safeReadJSON(COUPONS_FILE, { coupons: [] });
@@ -63,9 +63,9 @@ function saveEvents(events) {
   safeWriteJSON(EVENTS_FILE, { events });
 }
 
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Coupon operations
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 function getCouponsByOwner(ownerWallet) {
   const coupons = loadCoupons();
@@ -99,9 +99,9 @@ function updateCoupon(id, ownerWallet, mutator) {
   return c;
 }
 
-// -------------------------------------------------------------------------
-// Events
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Events operations
+// ---------------------------------------------------------------------------
 
 function addEvent(event) {
   const events = loadEvents();
